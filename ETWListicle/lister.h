@@ -1,15 +1,5 @@
 #pragma once
-#include <Windows.h>
-#include <Windows.h>
-#include <stdio.h>
-#include <pla.h>
-#include <wbemidl.h>
-#include <wmistr.h>
-#include <Evntcons.h>
-#include <dbghelp.h>
 #include "utils.h"
-
-#pragma comment(lib, "dbghelp.lib")
 
 typedef NTSTATUS(*PETWENABLECALLBACK) (
     LPCGUID                  SourceId,
@@ -58,6 +48,9 @@ typedef struct _ETW_USER_REG_ENTRY {
     USHORT              RegType;           // 14th bit indicates a private
     ULONG64             Unknown[19];
 } ETW_USER_REG_ENTRY, * PETW_USER_REG_ENTRY;
+
+
+DWORD PROVIDER_COUNT = 0;
 
 // Get the virtual address of the ntdll!EtwpRegistrationTable
 LPVOID GetEtwpRegistrationTableVA(void) {
@@ -117,9 +110,95 @@ LPVOID GetEtwpRegistrationTableVA(void) {
     return NULL;
 }
 
+// Get ProviderName from GUID
+BSTR Guid2Name(OLECHAR* id) {
+    ITraceDataProvider* iTDataProv = NULL;
+    BSTR name = NULL;
+    
+    // Create an instance of a COM class 
+    HRESULT hr = CoCreateInstance(              
+                    &CLSID_TraceDataProvider,               // CLSID (Class Identifier) of the TraceDataProvider Class
+                    0,                                      // Indicates that the object is not being created as part of an aggregat
+                    CLSCTX_INPROC_SERVER,                   // Indicates that the object should be created within the same process as the calling code.
+                    &IID_ITraceDataProvider,                // Interface identifier for the ITraceDataProvider interface.
+                    (LPVOID*)&iTDataProv);                        // Receive the interface pointer of the created object
+
+
+    // query details for the provider GUID
+    hr = iTDataProv->lpVtbl->Query(iTDataProv, id, NULL);
+
+    if (hr != S_OK) {
+        iTDataProv->lpVtbl->Release(iTDataProv);
+        return L"Unknown";
+        
+    }
+    hr = iTDataProv->lpVtbl->get_DisplayName(iTDataProv, &name);
+    iTDataProv->lpVtbl->Release(iTDataProv);
+    return hr == S_OK ? name : L"Unknown";
+}
+
+// Print Individual Nodes
+VOID DumpNodeInfo(HANDLE hProcess, PRTL_BALANCED_NODE node, PETW_USER_REG_ENTRY uRegEntry) {
+    //CHAR        cbfile[MAX_PATH], ctfile[MAX_PATH];
+    //BYTE         buffer[sizeof(SYMBOL_INFO) + MAX_SYM_NAME * sizeof(CHAR)];
+    // PSYMBOL_INFO pSymbol = (PSYMBOL_INFO)buffer;
+    OLECHAR guid[40];
+    CHAR cbFile[MAX_PATH] = { 0 };
+    BYTE buffer[sizeof(SYMBOL_INFO) + MAX_SYM_NAME * sizeof(CHAR)] = {0};
+    PSYMBOL_INFO pSymbol = (PSYMBOL_INFO)buffer;
+
+
+    // Increase Provider Count
+    PROVIDER_COUNT++;
+
+    // Print Provider GUID
+    StringFromGUID2(&uRegEntry->ProviderId, guid, sizeof(guid));
+    wprintf(L"[%03d] Provider GUID:\t\t%s (%s)\n", PROVIDER_COUNT, guid, Guid2Name(guid));
+
+    // Get Callback file name
+    if (GetMappedFileNameA(hProcess, (LPVOID)uRegEntry->Callback, cbFile, MAX_PATH) != 0) {
+        printf("[%03d] Callback Function:\t0x%p :: %s", PROVIDER_COUNT, uRegEntry->Callback, cbFile);
+        pSymbol->SizeOfStruct = sizeof(SYMBOL_INFO);
+        pSymbol->MaxNameLen = MAX_SYM_NAME;
+        if(SymFromAddr(hProcess, (ULONG_PTR)uRegEntry->Callback, NULL, pSymbol)) {
+            printf("!%hs", pSymbol->Name);
+        }
+        printf("\n");
+    }
+
+    printf("\n");
+}
+
+// Actual function to iterate through etw user registrations
+VOID DumpUserEntries(HANDLE hProcess, PRTL_BALANCED_NODE node) {
+    SIZE_T _read = 0;
+    ETW_USER_REG_ENTRY etw_user_reg_entry = { 0 };
+
+    if (node == NULL) {
+        return;
+    }
+
+    if (!ReadProcessMemory(hProcess, (PBYTE)node, &etw_user_reg_entry, sizeof(ETW_USER_REG_ENTRY), &_read)) {
+        perror("ReadProcessMemory()");
+        return;
+    }
+    if (sizeof(ETW_USER_REG_ENTRY) != _read) {
+        fprintf(stderr, "[!] ReadProcessMemory() returned incomplete data\n");
+        return;
+    }
+
+    (void)DumpNodeInfo(hProcess, node, &etw_user_reg_entry);
+
+    DumpUserEntries(hProcess, etw_user_reg_entry.RegList.Children[0]);
+    DumpUserEntries(hProcess, etw_user_reg_entry.RegList.Children[1]);
+}
+
 // Parse the EtwpRegistrationTable and print registration entries
 BOOL ParseRegistrationTable(DWORD pid) {
+    SIZE_T _retlen = 0;
+    RTL_RB_TREE rb_tree = { 0 };
     CHAR sym_search_path[MAX_PATH] = { 0 };
+
     LPVOID pEtwRegTable = GetEtwpRegistrationTableVA();
     if (NULL == pEtwRegTable) {
         fprintf(stderr, "[!] Failed to get VA of EtwpRegistrationTable");
@@ -149,8 +228,33 @@ BOOL ParseRegistrationTable(DWORD pid) {
         CHAR _temp[MAX_PATH] = { 0 };
         printf("[i] Symbol Search Path:\t\t\t%s\n", _fullpath(_temp, sym_search_path, MAX_PATH));
     }
+    
+    // Read EtwpRegistrationTable into memory
+    if (!ReadProcessMemory(hProcess, (PBYTE)pEtwRegTable, (PBYTE)&rb_tree, sizeof(RTL_RB_TREE), &_retlen)) {
+        perror("ReadProcessMemory()");
+        (void)SymCleanup(hProcess);
+        CloseHandle(hProcess);
+        return FALSE;
+    }
+    if (sizeof(RTL_RB_TREE) != _retlen) {
+        fprintf(stderr, "[!] ReadProcessMemory() returned incomplete struct\n");
+        (void)SymCleanup(hProcess);
+        CloseHandle(hProcess);
+        return FALSE;
+    }
 
-        
+    // Initializes the COM library for use by the calling thread
+    HRESULT hr = CoInitializeEx(NULL, COINIT_MULTITHREADED);
+    if (hr != S_OK) {
+        fprintf(stderr, "[!] CoInitializeEx() failed (0x%x)\n", hr);
+        CloseHandle(hProcess);
+        return FALSE;
+    }
+
+    // Dump User Entries
+    (void)DumpUserEntries(hProcess, rb_tree.Root);
+
+    
     // CleanUp
     if (!SymCleanup(hProcess)) {
         perror("SymCleanup()");

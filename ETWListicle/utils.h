@@ -3,7 +3,15 @@
 #include <stdlib.h>
 #include <Windows.h>
 #include <tlhelp32.h>
-
+#include <pla.h>
+#include <psapi.h>
+#include <wbemidl.h>
+#include <shlwapi.h>
+#include <wmistr.h>
+#include <Evntcons.h>
+#include <dbghelp.h>
+#pragma comment(lib, "Shlwapi.lib")
+#pragma comment(lib, "dbghelp.lib")
 #define perror(fname) (fprintf(stderr, "[!] %s failed (0x%x)\n", fname, GetLastError()))
 
 enum MemType {
@@ -149,3 +157,4 @@ BOOL SetDebugPrivilege(void) {
     CloseHandle(hToken);
     return (GetLastError() != ERROR_NOT_ALL_ASSIGNED);
 }
+
