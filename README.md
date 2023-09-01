@@ -183,7 +183,7 @@ LPVOID GetEtwpRegistrationTableVA(void) {
 
 ---
 
-Going on a tangent here, I want to discuss the `get_mem_type()` function. It's a very hacky function based on a [stackoverflow answer](https://stackoverflow.com/a/59635651). Essentially, I wanted a way to figure out the kind of memory region a pointer points to, primarily to check if it's on the heap or in the code section. Time to break the function down as such:
+Going on a tangent here, I want to discuss the `get_mem_type()` function. It's a very hacky function based on a [stackoverflow answer](https://stackoverflow.com/a/59635651). Essentially, I wanted a way to figure out the kind of memory region a pointer is pointing to: primarily to check if it's on the heap or in the code section. Time to break the function down as such:
 
 ```c
 enum MemType {
@@ -205,18 +205,13 @@ enum MemType get_mem_type(LPVOID ptr) {
 	if (ret == 0) return invalid;
 	
 	if (ret != sizeof(MEMORY_BASIC_INFORMATION)) return invalid;
-
 	if (mbi.State != MEM_COMMIT) return invalid;
-
 	if (mbi.Protect == PAGE_NOACCESS) return invalid;
-
 	if (mbi.Protect == PAGE_READWRITE) {
 		if (mbi.Type == MEM_PRIVATE) return heap;
 		if (mbi.Type == MEM_IMAGE) return data;
 	}
-
 	if (mbi.Type == MEM_IMAGE && mbi.Protect == PAGE_EXECUTE_READ) return code;
-
 	if (mbi.Type == MEM_MAPPED) return mapped;
 
 	return unknown;
@@ -226,11 +221,13 @@ enum MemType get_mem_type(LPVOID ptr) {
 The function uses `VirtualQuery()` to get information about the memory pages. Now, if a page has:
 
 - RW permissions and the memory page is private, it usually indicates pointers on the heap (especially note that the heap cannot have execute permissions)
-- If the memory pages within the region are mapped into the view of an image section and is RX, we can say that it belongs to the code section (remember that you cannot write to a code section)
+- If the memory page within the region is mapped into the view of an image section and is RX, we can say that it belongs to the code section (remember that you cannot write to a code section)
 
 ---
 
-Back to `GetEtwpRegistrationTableVA()`. I came across [this stackoverflow question](https://stackoverflow.com/a/6127080) which demonstrates how we can use `GetModuleHandle()` to find the base address of ntdll in memory (even I forget at times that `HMODULE` essentially represents the base address of the module in memory.) We parse the memory to locate the `.data` section. Now comes the tricky part:
+Back to `GetEtwpRegistrationTableVA()`. I came across [this stackoverflow question](https://stackoverflow.com/a/6127080) which demonstrates how we can use `GetModuleHandle()` to find the base address of `ntdll` in memory (remember kids, `HMODULE` essentially represents the base address of the module in memory). Once we have the base address, we can walk the PE file till we locate the `.data` section.
+
+Once we have the `.data` section, we use brute force to search for `EtwpRegistrationTable`:
 
 ```c
 PRTL_RB_TREE rb_tree = (PRTL_RB_TREE)&data_segment[i];
@@ -241,15 +238,19 @@ if (get_mem_type(rb_tree->Root) == heap) {
     }
 }
 ```
-We iterate through the data segment and cast each memory pointer into a `PRTL_RB_TREE`, thereby assuming that we have a Reb-Black tree struct in that region. Why do we do this? Because remember when [windows deep internals](https://redplait.blogspot.com/2012/03/etweventregister-on-w8-consumer-preview.html) said?
+
+We iterate through the data segment and cast each memory pointer into a `PRTL_RB_TREE`, thereby assuming that we have a Red-Black tree struct in that region. Why do we do this? Remember when [windows deep internals](https://redplait.blogspot.com/2012/03/etweventregister-on-w8-consumer-preview.html) said:
 
 > "Now all registered items storing in red-black tree whose root placed in EtwpRegistrationTable"
 
-And since `ntdll!EtwpAllocateRegistration` allocates registration entries on the heap using `RtlAllocateHeap()`, we check if the `Root` entry points to an address on the heap. That's check uno. Assuming we pass check one, we cast the memory pointed by the `Root` entry of the Red-Black tree into a `PETW_USER_REG_ENTRY`, essentially casting the memory region into a `ETW_USER_REG_ENTRY` and verify if the `Callback` parameter points to a region in the code segment, because it essentially points to a callback function(that is pretty self explanatory).
+And since `ntdll!EtwpAllocateRegistration` allocates registration entries on the heap using `RtlAllocateHeap()`, we check if the `Root` entry points to an address on the heap. That's check uno. Assuming we pass check one, we cast the memory pointed by the `Root` entry of the Red-Black tree into a `PETW_USER_REG_ENTRY`, essentially casting the memory region into an `ETW_USER_REG_ENTRY` and verifying if the `Callback` parameter points to a region in the code segment because it essentially points to a callback function(that is pretty self-explanatory).
 
-So, if both the checks pass, we can say that we have successfully located the `EtwpRegistrationTable`. Just to verify that we got this correct, we can put a breakpoint in our code and, at the same time, verify the same with WinDBG:
+So, if both the checks pass, we can say that we have successfully located the `EtwpRegistrationTable`. Just to verify that we got this correct, we can put a breakpoint in our code and, at the same time, verify the same with `WinDBG`:
 
 ![](./imgs/etwp_reg_table_debug.png)
+
+### ParseRegistrationTable()
+
 
 ## References
 1 - [Taking a Snapshot and Viewing Processes](https://learn.microsoft.com/en-us/windows/win32/toolhelp/taking-a-snapshot-and-viewing-processes)
