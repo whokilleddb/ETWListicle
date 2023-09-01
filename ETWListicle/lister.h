@@ -49,7 +49,6 @@ typedef struct _ETW_USER_REG_ENTRY {
     ULONG64             Unknown[19];
 } ETW_USER_REG_ENTRY, * PETW_USER_REG_ENTRY;
 
-
 DWORD PROVIDER_COUNT = 0;
 
 // Get the virtual address of the ntdll!EtwpRegistrationTable
@@ -144,6 +143,7 @@ VOID DumpNodeInfo(HANDLE hProcess, PRTL_BALANCED_NODE node, PETW_USER_REG_ENTRY 
     // PSYMBOL_INFO pSymbol = (PSYMBOL_INFO)buffer;
     OLECHAR guid[40];
     CHAR cbFile[MAX_PATH] = { 0 };
+    CHAR ctxFile[MAX_PATH] = { 0 };
     BYTE buffer[sizeof(SYMBOL_INFO) + MAX_SYM_NAME * sizeof(CHAR)] = {0};
     PSYMBOL_INFO pSymbol = (PSYMBOL_INFO)buffer;
 
@@ -155,8 +155,9 @@ VOID DumpNodeInfo(HANDLE hProcess, PRTL_BALANCED_NODE node, PETW_USER_REG_ENTRY 
     StringFromGUID2(&uRegEntry->ProviderId, guid, sizeof(guid));
     wprintf(L"[%03d] Provider GUID:\t\t%s (%s)\n", PROVIDER_COUNT, guid, Guid2Name(guid));
 
-    // Get Callback file name
+    // Callback function executed in response to NtControlTrace
     if (GetMappedFileNameA(hProcess, (LPVOID)uRegEntry->Callback, cbFile, MAX_PATH) != 0) {
+        (void)PathStripPathA(cbFile);
         printf("[%03d] Callback Function:\t0x%p :: %s", PROVIDER_COUNT, uRegEntry->Callback, cbFile);
         pSymbol->SizeOfStruct = sizeof(SYMBOL_INFO);
         pSymbol->MaxNameLen = MAX_SYM_NAME;
@@ -166,6 +167,27 @@ VOID DumpNodeInfo(HANDLE hProcess, PRTL_BALANCED_NODE node, PETW_USER_REG_ENTRY 
         printf("\n");
     }
 
+    // Get Context
+    if (GetMappedFileNameA(hProcess, (LPVOID)uRegEntry->CallbackContext, ctxFile, MAX_PATH) != 0) {
+        (void)PathStripPathA(ctxFile);
+        printf("[%03d] Callback Context:\t\t0x%p :: %s", PROVIDER_COUNT, uRegEntry->CallbackContext, ctxFile);
+        pSymbol->SizeOfStruct = sizeof(SYMBOL_INFO);
+        pSymbol->MaxNameLen = MAX_SYM_NAME;
+        if (SymFromAddr(hProcess, (ULONG_PTR)uRegEntry->CallbackContext, NULL, pSymbol)) {
+            printf("!%hs", pSymbol->Name);
+        }
+        printf("\n");
+    }
+
+    // Registration Handle to be used with EtwEventUnregister
+    printf("[%03d] Registration Handle:\t0x%p\n", PROVIDER_COUNT, (PVOID)((ULONG64)node | (ULONG64)uRegEntry->RegIndex << 48));
+    
+    // Handle of thread for callback
+    printf("[%03d] Callback Thread Handle:\t0x%p\n", PROVIDER_COUNT, (PVOID)uRegEntry->Thread);
+    
+    // Used to communicate with the kernel via NtTraceEvent
+    printf("[%03d] ReplyHandle:\t\t0x%p\n", PROVIDER_COUNT, (PVOID)uRegEntry->ReplyHandle);
+         
     printf("\n");
 }
 
@@ -252,9 +274,11 @@ BOOL ParseRegistrationTable(DWORD pid) {
     }
 
     // Dump User Entries
+    printf("[i] Dumping Registration Entries\n\n");
     (void)DumpUserEntries(hProcess, rb_tree.Root);
 
-    
+    printf("\n[i] Total Number of Entries:\t%d\n", PROVIDER_COUNT);
+
     // CleanUp
     if (!SymCleanup(hProcess)) {
         perror("SymCleanup()");
