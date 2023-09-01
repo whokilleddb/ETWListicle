@@ -81,7 +81,7 @@ enum MemType get_mem_type(LPVOID ptr) {
 	return unknown;
 }
 
-// Get the PROCESSENTRY32 struct corresponding to a process
+// Find PID corresponding to the target process
 DWORD FindPid(char* procname) {
 	PROCESSENTRY32 _temp = { 0 };
 	_temp.dwSize = sizeof(PROCESSENTRY32);
@@ -157,4 +157,3 @@ BOOL SetDebugPrivilege(void) {
     CloseHandle(hToken);
     return (GetLastError() != ERROR_NOT_ALL_ASSIGNED);
 }
-

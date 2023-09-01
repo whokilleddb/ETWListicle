@@ -10,37 +10,63 @@ ETWListicle.exe notepad.exe
 ## Code Breakdown
 > Note that this section may exclude error checks just to keep things simple
 
-As usual, we start with the main function:
+### The Main Function
+As usual, we start with the `main()` function:
 
 ```c
-```
-
-We read in the name of the target process as a command line argument, and pass it to the `GetProcEntry()` function along with a pointer to a `PROCESSENTRY32` struct. Let's look at `GetProcEntry()` function:
-
-```c
-// Get the PROCESSENTRY32 struct corresponding to a process
-BOOL GetProcEntry(char *procname, PROCESSENTRY32* pe32) {
-	PROCESSENTRY32 _temp = { 0 };
-	_temp.dwSize = sizeof(PROCESSENTRY32);
-	HANDLE hProcSnap = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
-	Process32First(hProcSnap, &_temp);
-	while (Process32Next(hProcSnap, &_temp)) {
-		if (lstrcmpiA(procname, _temp.szExeFile) == 0) {
-			RtlMoveMemory(pe32, &_temp, sizeof(PROCESSENTRY32));
-			CloseHandle(hProcSnap);
-			return TRUE;
-		}
+int main(int argc, char** argv) {
+	// Check CLI args
+	if (argc != 2) {
+		fprintf(stderr, "Usage:\n\t%s <PROCESS NAME>\n", argv[0]);
+		return -1;
 	}
-	CloseHandle(hProcSnap);
-	return FALSE;
+
+	// Print details
+	printf("[i] Listing ETW providers for:\t\t%s\n", argv[1]);
+
+	// Get Process ID for the target process
+	DWORD pid = FindPid(argv[1]);
+	printf("[i] Process ID(PID) of target process:\t%d\n", pid);
+
+	SetDebugPrivilege();
+	
+	ParseRegistrationTable(pid);
+	return 0;
 }
 ```
 
-We use `CreateToolhelp32Snapshot()` to create a snapshot of all the system process and use a `Process32First()` and `Process32Next()` to iterate through the process entries in the system snapshot. If we get a match on the process name, we copy over the `PROCESSENTRY32` struct to the location pointed by the input pointer to populate it, and then return from the function.
-
-Back in `main()`, if the function is runs successfully, we print the PID of the target process. Next up, we try to set `DEBUG` privileges for the current process using `SetDebugPrivilege()`. This would enable us read process memory of processes which we usually might not have access to. Breaking down the code for `SetDebugPrivilege()`, we get:
+The main function begins by checking the command line arguments, and if supplied correctly, fetches the target process's name from the CLI and passes it to the `FindPid()` function to fetch the Process ID of the target process:
 
 ```c
+// Defined in utils.h
+DWORD FindPid(char* procname) {
+	PROCESSENTRY32 _temp = { 0 };
+	_temp.dwSize = sizeof(PROCESSENTRY32);
+	HANDLE hProcSnap = CreateToolhelp32Snapshot(
+		TH32CS_SNAPPROCESS, //  Take a snapshot of the processes
+		0                   //  Capture a snapshot of all processes in the system
+	);
+	Process32First(hProcSnap, &_temp);
+	// Loop through Snapshot entries
+	while (Process32Next(hProcSnap, &_temp)) {
+		if (lstrcmpiA(procname, _temp.szExeFile) == 0) {
+			CloseHandle(hProcSnap);
+			return _temp.th32ProcessID;
+		}
+	}
+	CloseHandle(hProcSnap);
+	fprintf(stderr, "[!] No %s process found\n", procname);
+	return 0;
+}
+
+```
+
+We use `CreateToolhelp32Snapshot()` to create a snapshot of all the system processes and then use a combination of `Process32First()` and `Process32Next()` to iterate through the process entries in the system snapshot. We check the `szExeFile` field of the entries to see if we have a match on the target process's name, and, if found, we return the PID of the target process. 
+
+Once we have the PID of the target process, we try to set `DEBUG` privileges for the current process. This would enable us to open handles to processes we usually don't have access to and read the process memory. To do this, we call the `SetDebugPrivilege()` function.
+
+```c
+// Defined in utils.h
 BOOL SetDebugPrivilege(void) {
     LUID luid;
     HANDLE  hToken;
@@ -64,20 +90,32 @@ BOOL SetDebugPrivilege(void) {
     return (GetLastError() != ERROR_NOT_ALL_ASSIGNED);
 }
 ```
+
 I ripped this off [Enabling and Disabling Privileges in C++](https://learn.microsoft.com/en-us/windows/win32/secauthz/enabling-and-disabling-privileges-in-c--) - check it out for the indepth explanation, but TLDR: we modify the current process token and try to elevate the current process to have `DEBUG` privileges so that we can easily read process memory of the specified target. 
 
-Now this is the part where we pull up our Decompilers and examine `ntdll!EtwEventRegister` in Ghidra:
+Finally, we call `ParseRegistrationTable()` to find the `EtwpRegistrationTable` and the corresponding registration entries. But before we look into that, it is important to understand why this is important and how to locate it.
+
+### EtwpRegistrationTable and Registration Entries - Debug Time!
+
+Now this is the part where we pull up our Decompilers. For this exercise, I have used a combination of **IDA-Pro** and **Ghidra**.
+
+We start by loading `ntdll` from `System32` into both of these tools. First, we examine `ntdll!EtwEventRegister` in Ghidra:
 
 ![](./imgs/EtwEventRegister_Ghidra.png)
 
-As we can see, `ntdll!EtwEventRegister` calls `ntdll!EtwNotificationRegister`, looking at the pseudocode for which in IDA-Pro. we get the following:
+Why this particular function? Well, ETW providers are registered by the [EventRegister()](https://learn.microsoft.com/en-us/windows/win32/api/evntprov/nf-evntprov-eventregister) function described in the `Advapi32.dll`, which ultimately passes it on to the `ntdll!EtwEventRegister`, so we are cutting out the middlemen and starting our examination here. 
+
+As we can see, `ntdll!EtwEventRegister` in turn calls `ntdll!EtwNotificationRegister`, looking at the pseudocode for which in **IDA-Pro**, we get the following:
 
 ![](./imgs/EtwNotificationRegister_IDA.png)
 
-It inturn makes a call to `ntdll!EtwpAllocateRegistration`. This function is responsible for allocating registrations in memory:
+Okay, but why did we skip past the other functions shown in the pseudocode? It is because we are exclusively trying to locate functions and structures associated with registering and allocating provider entries. 
+
+Coming back to `ntdll!EtwNotificationRegister`, we see that it makes a call to `ntdll!EtwpAllocateRegistration`. This function is responsible for allocating registrations in memory:
+
 ![](./imgs/EtwpAllocateRegistration_IDA.png)
 
-We see that it calls `RtlAllocateHeap()` with the size parameter set to `0x100` aka, 256 bytes. If we looks at the `ETW_USER_REG_ENTRY` struct, we see that it is exactly 256 bytes, just as an extra set of confirmation: 
+We see that it calls `RtlAllocateHeap()` with the size parameter set to `0x100` aka, 256 bytes to reserve memory for the registration entries. Meanwhile, if we take a look at the `ETW_USER_REG_ENTRY` struct, we see that it is exactly 256 bytes - just as an extra set of confirmation: 
 
 ```c
 typedef struct _ETW_USER_REG_ENTRY {
@@ -96,17 +134,20 @@ typedef struct _ETW_USER_REG_ENTRY {
 } ETW_USER_REG_ENTRY, * PETW_USER_REG_ENTRY;
 ```
 
-Scrolling down on `ntdll!EtwNotificationRegister`, we see that it calls `ntdll!EtwpInsertRegistration` with the value returned from `ntdll!EtwpAllocateRegistration` (which, in all suspects, is the allocated heap address)
+Further examining `ntdll!EtwNotificationRegister`, we see that it calls `ntdll!EtwpInsertRegistration` with the value returned from `ntdll!EtwpAllocateRegistration` (which, in all suspect, is the allocated heap address for user registration entry)
 
-Loading up `ntdll!EtwpInsertRegistration` in IDA, we see a reference to `EtwpRegistrationTable`. According to [windows deep internals](https://redplait.blogspot.com/2012/03/etweventregister-on-w8-consumer-preview.html):
+Loading up `ntdll!EtwpInsertRegistration` in **IDA-Pro**, we see a reference to `EtwpRegistrationTable`. According to [windows deep internals](https://redplait.blogspot.com/2012/03/etweventregister-on-w8-consumer-preview.html):
 
 > "Now all registered items storing in red-black tree whose root placed in EtwpRegistrationTable"
 
-So now that we know that we have the `EtwpRegistrationTable` structure present in the `.data` segment of ntdll, we bruteforce our way and try to locate it's virtual address. 
+So now that we know that we have the `EtwpRegistrationTable` structure present in the `.data` segment of `ntdll`, we can use good ol' brute force to locate its virtual address, and we do that with `GetEtwpRegistrationTableVA()` function.
 
-Coming back to `main()`, we use the `GetEtwpRegistrationTableVA()` function to fetch the address of the table. To understand how the `GetEtwpRegistrationTableVA()` function, we take a look into it's source code:
+### Forcing our way through - GetEtwpRegistrationTableVA()
+
+The `GetEtwpRegistrationTableVA()` looks as such:
 
 ```c
+// Located in lister.h
 LPVOID GetEtwpRegistrationTableVA(void) {
     DWORD bcount = 0;
     PULONG_PTR data_segment = NULL;
@@ -142,7 +183,7 @@ LPVOID GetEtwpRegistrationTableVA(void) {
 
 ---
 
-Going on a tangent here, I want to discuss the `get_mem_type()` function. Its a very hacky function based off a [stackoverflow answer](https://stackoverflow.com/a/59635651). Essentially, I wanted a way to figure out the kind of memory region a pointer points to, primarily to check if it's on the heap or in the code section. Time to break the function down as such:
+Going on a tangent here, I want to discuss the `get_mem_type()` function. It's a very hacky function based on a [stackoverflow answer](https://stackoverflow.com/a/59635651). Essentially, I wanted a way to figure out the kind of memory region a pointer points to, primarily to check if it's on the heap or in the code section. Time to break the function down as such:
 
 ```c
 enum MemType {
@@ -181,9 +222,10 @@ enum MemType get_mem_type(LPVOID ptr) {
 	return unknown;
 }
 ```
-The function uses `VirtualQuery()` function to get information about the memory pages. Now, if a page has:
 
-- RW permissions and the memory is private, it usually indicates pointers on the heap (especially note that the heap cannot have execute permissions)
+The function uses `VirtualQuery()` to get information about the memory pages. Now, if a page has:
+
+- RW permissions and the memory page is private, it usually indicates pointers on the heap (especially note that the heap cannot have execute permissions)
 - If the memory pages within the region are mapped into the view of an image section and is RX, we can say that it belongs to the code section (remember that you cannot write to a code section)
 
 ---
@@ -208,4 +250,11 @@ And since `ntdll!EtwpAllocateRegistration` allocates registration entries on the
 So, if both the checks pass, we can say that we have successfully located the `EtwpRegistrationTable`. Just to verify that we got this correct, we can put a breakpoint in our code and, at the same time, verify the same with WinDBG:
 
 ![](./imgs/etwp_reg_table_debug.png)
+
+## References
+1 - [Taking a Snapshot and Viewing Processes](https://learn.microsoft.com/en-us/windows/win32/toolhelp/taking-a-snapshot-and-viewing-processes)
+
+2 - [Enabling and Disabling Privileges in C++](https://learn.microsoft.com/en-us/windows/win32/secauthz/enabling-and-disabling-privileges-in-c--)
+
+3- [EtwEventRegister on w8 consumer preview](https://redplait.blogspot.com/2012/03/etweventregister-on-w8-consumer-preview.html)
 
