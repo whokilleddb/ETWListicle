@@ -263,40 +263,19 @@ BOOL ParseRegistrationTable(DWORD pid) {
     CHAR sym_search_path[MAX_PATH] = { 0 };
 
     LPVOID pEtwRegTable = GetEtwpRegistrationTableVA();
-    if (NULL == pEtwRegTable) {
-        fprintf(stderr, "[!] Failed to get VA of EtwpRegistrationTable");
-        return -1;
-    }
     printf("[i] VA of EtwpRegistrationTable:\t0x%p\n", pEtwRegTable);
 
     // Open Handle to target process
     HANDLE hProcess = OpenProcess(PROCESS_ALL_ACCESS, FALSE, pid);
-    if (NULL == hProcess) {
-        perror("OpenProcess()");
-        return FALSE;
-    }
 
     // Read EtwpRegistrationTable into memory
-    if (!ReadProcessMemory(hProcess, (PBYTE)pEtwRegTable, (PBYTE)&rb_tree, sizeof(RTL_RB_TREE), &_retlen)) {
-        perror("ReadProcessMemory()");
-        CloseHandle(hProcess);
-        return FALSE;
-    }
-    if (sizeof(RTL_RB_TREE) != _retlen) {
-        fprintf(stderr, "[!] ReadProcessMemory() returned incomplete struct\n");
-        CloseHandle(hProcess);
-        return FALSE;
-    }
+    ReadProcessMemory(hProcess, (PBYTE)pEtwRegTable, (PBYTE)&rb_tree, sizeof(RTL_RB_TREE), &_retlen);
 
     // Load symbols when a reference is made requiring the symbols be loaded.
     (void)SymSetOptions(SYMOPT_DEFERRED_LOADS);
 
     // Initializes the symbol handler for a process.
-    if (!SymInitialize(hProcess, NULL, TRUE)) {
-        perror("SymInitialize()");
-        CloseHandle(hProcess);
-        return FALSE;
-    }
+    SymInitialize(hProcess, NULL, TRUE);
 
     // Retrieve the symbol search path
     if (SymGetSearchPath(hProcess, sym_search_path, MAX_PATH)) {
@@ -306,11 +285,6 @@ BOOL ParseRegistrationTable(DWORD pid) {
 
     // Initializes the COM library for use by the calling thread
     HRESULT hr = CoInitializeEx(NULL, COINIT_MULTITHREADED);
-    if (hr != S_OK) {
-        fprintf(stderr, "[!] CoInitializeEx() failed (0x%x)\n", hr);
-        CloseHandle(hProcess);
-        return FALSE;
-    }
 
     // Dump User Entries
     printf("[i] Dumping Registration Entries\n\n");
@@ -319,11 +293,7 @@ BOOL ParseRegistrationTable(DWORD pid) {
     printf("[i] Total Number of Entries:\t%d\n", PROVIDER_COUNT);
 
     // CleanUp
-    if (!SymCleanup(hProcess)) {
-        perror("SymCleanup()");
-        CloseHandle(hProcess);
-        return FALSE;
-    }
+    SymCleanup(hProcess);
     CloseHandle(hProcess);
     return TRUE;
 }
@@ -334,7 +304,14 @@ The function essentially wraps lots of other essential features that we use to r
 
 Once we get the virtual address of the `EtwpRegistrationTable` using `GetEtwpRegistrationTableVA()`, we acquire a handle to the remote process using `OpenProcess()`. Finally, we use `ReadProcessMemory()` to read the remote process's memory at that Virtual Address into an `RTL_RB_TREE` tree struct.
 
+Next up, we initialize the symbol handler. The `SymSetOptions()` function defers symbol loading until symbol information is requested. The code loads the symbols for each module in the specified process. I would really recommend reading through [this v v short MSDN article](https://learn.microsoft.com/en-us/windows/win32/debug/initializing-the-symbol-handler) to better understand how it works.
 
+Initializes the COM library for use by the calling thread by using `CoInitializeEx()`. The `COINIT_MULTITHREADED` parameter indicates that COM will be initialized in a multithreaded apartment, which means that multiple threads can concurrently use COM objects without any restrictions.
+
+Finally, we dump the entries for the User registrations by calling `DumpUserEntries()` function. 
+
+> Note that we pass the address pointer by the `Root` element of `EtwpRegistrationTable` because, again, remember [windows deep internals](https://redplait.blogspot.com/2012/03/etweventregister-on-w8-consumer-preview.html):
+> "Now all registered items storing in red-black tree whose root placed in EtwpRegistrationTable"
 
 ## References
 1 - [Taking a Snapshot and Viewing Processes](https://learn.microsoft.com/en-us/windows/win32/toolhelp/taking-a-snapshot-and-viewing-processes)
