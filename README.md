@@ -1,11 +1,13 @@
 # ETWListicle
-List the ETW provider(s) in the registration table of a process
+Display information about each ETW provider in the registration table of a process.  It also contains the code walkthrough which details how and why this thing works, so scroll down if you want to read on that, just a scroll away :D 
 
 ## Usage
 
 ```
 ETWListicle.exe notepad.exe
 ```
+
+![](./imgs/output.png)
 
 ## Code Breakdown
 > Note that this section may exclude error checks just to keep things simple
@@ -454,6 +456,15 @@ BSTR Guid2Name(OLECHAR* id) {
 ```
 The function uses the `CoCreateInstance()` function to create an instance of the TraceDataProvider COM object( identified by the Class Identifier `CLSID_TraceDataProvider`). This COM object is created within the same process as the calling code(as indicated by passing `CLSCTX_INPROC_SERVER` to the function), and the code specifies that it wants to obtain the ITraceDataProvider interface from the newly created object(by setting the Interface identifier to `IID_ITraceDataProvider`). The resulting interface pointer is stored in the variable `iTDataProv`. This allows the program to interact with and use the functionality provided by the `ITraceDataProvider` COM object, which we use to call the `Query()` and `get_DisplayName()` functions to retrieve the name of the Provider. If the functions succeeds, we return the Provider name, else return the string: `"Unknown"`.
 
+## Conclusion
+
+The code, when run, prints out all the registered ETW providers as well as the total number of such providers. This can help Blue/Red Teamers to closely inspect the Callback functions in response to `NtTraceControl()`. 
+
+The main motivation to write this blog was the severe lack of documentation around this topic, so I wanted to break it down for any curious minds out there :D 
+
+Happy Hacking! 
+![](https://media.tenor.com/WgXeFbkMUNYAAAAd/moistcr1tikal-penguinz0.gif)
+
 ## References
 1 - [Taking a Snapshot and Viewing Processes](https://learn.microsoft.com/en-us/windows/win32/toolhelp/taking-a-snapshot-and-viewing-processes)
 
@@ -461,3 +472,4 @@ The function uses the `CoCreateInstance()` function to create an instance of the
 
 3- [EtwEventRegister on w8 consumer preview](https://redplait.blogspot.com/2012/03/etweventregister-on-w8-consumer-preview.html)
 
+4 - [Another method of bypassing ETW and Process Injection via ETW registration entries.](https://modexp.wordpress.com/2020/04/08/red-teams-etw/)
