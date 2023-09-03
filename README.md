@@ -288,7 +288,7 @@ BOOL ParseRegistrationTable(DWORD pid) {
 
     // Dump User Entries
     printf("[i] Dumping Registration Entries\n\n");
-    (void)DumpUserEntries(hProcess, rb_tree.Root);
+    (void)FetchUserEntries(hProcess, rb_tree.Root);
 
     printf("[i] Total Number of Entries:\t%d\n", PROVIDER_COUNT);
 
@@ -308,10 +308,100 @@ Next up, we initialize the symbol handler. The `SymSetOptions()` function defers
 
 Initializes the COM library for use by the calling thread by using `CoInitializeEx()`. The `COINIT_MULTITHREADED` parameter indicates that COM will be initialized in a multithreaded apartment, which means that multiple threads can concurrently use COM objects without any restrictions.
 
-Finally, we dump the entries for the User registrations by calling `DumpUserEntries()` function. 
+Finally, we dump the entries for the User registrations by calling `FetchUserEntries()` function. 
 
 > Note that we pass the address pointer by the `Root` element of `EtwpRegistrationTable` because, again, remember [windows deep internals](https://redplait.blogspot.com/2012/03/etweventregister-on-w8-consumer-preview.html):
 > "Now all registered items storing in red-black tree whose root placed in EtwpRegistrationTable"
+
+### FetchUserEntries()
+This is a recursive function that parses the `EtwpRegistrationTable` Red-Black tree:
+
+```c
+// Defined in lister.h
+// Actual function to iterate through etw user registrations
+VOID FetchUserEntries(HANDLE hProcess, PRTL_BALANCED_NODE node) {
+    SIZE_T _read = 0;
+    ETW_USER_REG_ENTRY etw_user_reg_entry = { 0 };
+    
+    if (node == NULL) return;
+    
+    ReadProcessMemory(hProcess, (PBYTE)node, &etw_user_reg_entry, sizeof(ETW_USER_REG_ENTRY), &_read);
+
+    (void)DumpNodeInfo(hProcess, node, &etw_user_reg_entry);
+
+    FetchUserEntries(hProcess, etw_user_reg_entry.RegList.Children[0]);
+    FetchUserEntries(hProcess, etw_user_reg_entry.RegList.Children[1]);
+}
+```
+
+The function reads the process memory at the given node address from the remote process using `ReadProcessMemory()` into an `ETW_USER_REG_ENTRY` struct. We call `DumpNodeInfo()` to dump the details of the struct(more on that later). Finally, we recursively call the function, but this time with the Child nodes of the Red-Black Tree. We do this till we reach an invalid node, thereby iterating through the entire list of registered entries. 
+
+### DumpNodeInfo() and Guid2Name()
+
+This function is responsible for dumping the information stored in the `ETW_USER_REG_ENTRY` structures.
+
+```c
+// Defined in lister.h
+// Print Individual Nodes
+VOID DumpNodeInfo(HANDLE hProcess, PRTL_BALANCED_NODE node, PETW_USER_REG_ENTRY uRegEntry) {
+    OLECHAR guid[40];
+    CHAR cbFile[MAX_PATH] = { 0 };
+    CHAR ctxFile[MAX_PATH] = { 0 };
+    BYTE buffer[sizeof(SYMBOL_INFO) + MAX_SYM_NAME * sizeof(CHAR)] = {0};
+    PSYMBOL_INFO pSymbol = (PSYMBOL_INFO)buffer;
+
+    // Increase Provider Count
+    PROVIDER_COUNT++;
+
+    // Print Provider GUID
+    StringFromGUID2(&uRegEntry->ProviderId, guid, sizeof(guid));
+    wprintf(L"[%03d] Provider GUID:\t\t%s (%s)\n", PROVIDER_COUNT, guid, Guid2Name(guid));
+
+    // Callback function executed in response to NtControlTrace
+    if (GetMappedFileNameA(hProcess, (LPVOID)uRegEntry->Callback, cbFile, MAX_PATH) != 0) {
+        (void)PathStripPathA(cbFile);
+        printf("[%03d] Callback Function:\t0x%p :: %s", PROVIDER_COUNT, uRegEntry->Callback, cbFile);
+        pSymbol->SizeOfStruct = sizeof(SYMBOL_INFO);
+        pSymbol->MaxNameLen = MAX_SYM_NAME;
+        if(SymFromAddr(hProcess, (ULONG_PTR)uRegEntry->Callback, NULL, pSymbol)) {
+            printf("!%hs", pSymbol->Name);
+        }
+        printf("\n");
+    }
+
+    // Get Context
+    if (GetMappedFileNameA(hProcess, (LPVOID)uRegEntry->CallbackContext, ctxFile, MAX_PATH) != 0) {
+        (void)PathStripPathA(ctxFile);
+        printf("[%03d] Callback Context:\t\t0x%p :: %s", PROVIDER_COUNT, uRegEntry->CallbackContext, ctxFile);
+        pSymbol->SizeOfStruct = sizeof(SYMBOL_INFO);
+        pSymbol->MaxNameLen = MAX_SYM_NAME;
+        if (SymFromAddr(hProcess, (ULONG_PTR)uRegEntry->CallbackContext, NULL, pSymbol)) {
+            printf("!%hs", pSymbol->Name);
+        }
+        printf("\n");
+    }
+
+    // Registration Handle to be used with EtwEventUnregister
+    printf("[%03d] Registration Handle:\t0x%p\n", PROVIDER_COUNT, (PVOID)((ULONG64)node | (ULONG64)uRegEntry->RegIndex << 48));
+    
+    // Handle of thread for callback
+    printf("[%03d] Callback Thread Handle:\t0x%p\n", PROVIDER_COUNT, (PVOID)uRegEntry->Thread);
+    
+    // Used to communicate with the kernel via NtTraceEvent
+    printf("[%03d] ReplyHandle:\t\t0x%p\n", PROVIDER_COUNT, (PVOID)uRegEntry->ReplyHandle);
+         
+    printf("\n");
+}
+```
+
+It's a very simple function that prints the entries of the `ETW_USER_REG_ENTRY` structure. For the most part, it is very self-explanatory with it printing the respective struct fields while updating the global `PROVIDER_COUNT` variable which essentially keeps track of how many providers the process is subscribed to. 
+
+However, I would like to draw attention to the part where we print the provider GUID:
+```c
+StringFromGUID2(&uRegEntry->ProviderId, guid, sizeof(guid));
+wprintf(L"[%03d] Provider GUID:\t\t%s (%s)\n", PROVIDER_COUNT, guid, Guid2Name(guid));
+```
+
 
 ## References
 1 - [Taking a Snapshot and Viewing Processes](https://learn.microsoft.com/en-us/windows/win32/toolhelp/taking-a-snapshot-and-viewing-processes)

@@ -138,9 +138,6 @@ BSTR Guid2Name(OLECHAR* id) {
 
 // Print Individual Nodes
 VOID DumpNodeInfo(HANDLE hProcess, PRTL_BALANCED_NODE node, PETW_USER_REG_ENTRY uRegEntry) {
-    //CHAR        cbfile[MAX_PATH], ctfile[MAX_PATH];
-    //BYTE         buffer[sizeof(SYMBOL_INFO) + MAX_SYM_NAME * sizeof(CHAR)];
-    // PSYMBOL_INFO pSymbol = (PSYMBOL_INFO)buffer;
     OLECHAR guid[40];
     CHAR cbFile[MAX_PATH] = { 0 };
     CHAR ctxFile[MAX_PATH] = { 0 };
@@ -192,7 +189,7 @@ VOID DumpNodeInfo(HANDLE hProcess, PRTL_BALANCED_NODE node, PETW_USER_REG_ENTRY 
 }
 
 // Actual function to iterate through etw user registrations
-VOID DumpUserEntries(HANDLE hProcess, PRTL_BALANCED_NODE node) {
+VOID FetchUserEntries(HANDLE hProcess, PRTL_BALANCED_NODE node) {
     SIZE_T _read = 0;
     ETW_USER_REG_ENTRY etw_user_reg_entry = { 0 };
 
@@ -211,8 +208,8 @@ VOID DumpUserEntries(HANDLE hProcess, PRTL_BALANCED_NODE node) {
 
     (void)DumpNodeInfo(hProcess, node, &etw_user_reg_entry);
 
-    DumpUserEntries(hProcess, etw_user_reg_entry.RegList.Children[0]);
-    DumpUserEntries(hProcess, etw_user_reg_entry.RegList.Children[1]);
+    FetchUserEntries(hProcess, etw_user_reg_entry.RegList.Children[0]);
+    FetchUserEntries(hProcess, etw_user_reg_entry.RegList.Children[1]);
 }
 
 // Parse the EtwpRegistrationTable and print registration entries
@@ -273,7 +270,7 @@ BOOL ParseRegistrationTable(DWORD pid) {
 
     // Dump User Entries
     printf("[i] Dumping Registration Entries\n\n");
-    (void)DumpUserEntries(hProcess, rb_tree.Root);
+    (void)FetchUserEntries(hProcess, rb_tree.Root);
 
     printf("[i] Total Number of Entries:\t%d\n", PROVIDER_COUNT);
 
