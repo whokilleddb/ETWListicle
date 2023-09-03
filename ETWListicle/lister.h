@@ -235,6 +235,18 @@ BOOL ParseRegistrationTable(DWORD pid) {
         return FALSE;
     }
 
+    // Read EtwpRegistrationTable into memory
+    if (!ReadProcessMemory(hProcess, (PBYTE)pEtwRegTable, (PBYTE)&rb_tree, sizeof(RTL_RB_TREE), &_retlen)) {
+        perror("ReadProcessMemory()");
+        CloseHandle(hProcess);
+        return FALSE;
+    }
+    if (sizeof(RTL_RB_TREE) != _retlen) {
+        fprintf(stderr, "[!] ReadProcessMemory() returned incomplete struct\n");
+        CloseHandle(hProcess);
+        return FALSE;
+    }
+
     // Load symbols when a reference is made requiring the symbols be loaded.
     (void)SymSetOptions(SYMOPT_DEFERRED_LOADS);
 
@@ -250,20 +262,6 @@ BOOL ParseRegistrationTable(DWORD pid) {
         CHAR _temp[MAX_PATH] = { 0 };
         printf("[i] Symbol Search Path:\t\t\t%s\n", _fullpath(_temp, sym_search_path, MAX_PATH));
     }
-    
-    // Read EtwpRegistrationTable into memory
-    if (!ReadProcessMemory(hProcess, (PBYTE)pEtwRegTable, (PBYTE)&rb_tree, sizeof(RTL_RB_TREE), &_retlen)) {
-        perror("ReadProcessMemory()");
-        (void)SymCleanup(hProcess);
-        CloseHandle(hProcess);
-        return FALSE;
-    }
-    if (sizeof(RTL_RB_TREE) != _retlen) {
-        fprintf(stderr, "[!] ReadProcessMemory() returned incomplete struct\n");
-        (void)SymCleanup(hProcess);
-        CloseHandle(hProcess);
-        return FALSE;
-    }
 
     // Initializes the COM library for use by the calling thread
     HRESULT hr = CoInitializeEx(NULL, COINIT_MULTITHREADED);
@@ -277,7 +275,7 @@ BOOL ParseRegistrationTable(DWORD pid) {
     printf("[i] Dumping Registration Entries\n\n");
     (void)DumpUserEntries(hProcess, rb_tree.Root);
 
-    printf("\n[i] Total Number of Entries:\t%d\n", PROVIDER_COUNT);
+    printf("[i] Total Number of Entries:\t%d\n", PROVIDER_COUNT);
 
     // CleanUp
     if (!SymCleanup(hProcess)) {
