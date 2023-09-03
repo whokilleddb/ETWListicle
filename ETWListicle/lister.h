@@ -288,10 +288,3 @@ BOOL ParseRegistrationTable(DWORD pid) {
     CloseHandle(hProcess);
     return TRUE;
 }
-
-
-
-
-
-
-

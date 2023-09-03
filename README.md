@@ -251,6 +251,55 @@ So, if both the checks pass, we can say that we have successfully located the `E
 
 ### ParseRegistrationTable()
 
+The function responsible for parsing the `EtwpRegistrationTable` is `ParseRegistrationTable()`.
+
+```c
+// Defined in lister.h
+// Parse the EtwpRegistrationTable and print registration entries
+BOOL ParseRegistrationTable(DWORD pid) {
+    SIZE_T _retlen = 0;
+    RTL_RB_TREE rb_tree = { 0 };
+    CHAR sym_search_path[MAX_PATH] = { 0 };
+
+    LPVOID pEtwRegTable = GetEtwpRegistrationTableVA();
+    printf("[i] VA of EtwpRegistrationTable:\t0x%p\n", pEtwRegTable);
+
+    // Open Handle to target process
+    HANDLE hProcess = OpenProcess(PROCESS_ALL_ACCESS, FALSE, pid);
+
+    // Load symbols when a reference is made requiring the symbols be loaded.
+    (void)SymSetOptions(SYMOPT_DEFERRED_LOADS);
+
+    // Initializes the symbol handler for a process.
+    SymInitialize(hProcess, NULL, TRUE);
+
+    // Retrieve the symbol search path
+    if (SymGetSearchPath(hProcess, sym_search_path, MAX_PATH)) {
+        CHAR _temp[MAX_PATH] = { 0 };
+        printf("[i] Symbol Search Path:\t\t\t%s\n", _fullpath(_temp, sym_search_path, MAX_PATH));
+    }
+    
+    // Read EtwpRegistrationTable into memory
+    ReadProcessMemory(hProcess, (PBYTE)pEtwRegTable, (PBYTE)&rb_tree, sizeof(RTL_RB_TREE), &_retlen);
+
+    // Initializes the COM library for use by the calling thread
+    HRESULT hr = CoInitializeEx(NULL, COINIT_MULTITHREADED);
+
+    // Dump User Entries
+    printf("[i] Dumping Registration Entries\n\n");
+    (void)DumpUserEntries(hProcess, rb_tree.Root);
+    printf("\n[i] Total Number of Entries:\t%d\n", PROVIDER_COUNT);
+
+    // CleanUp
+    SymCleanup(hProcess);
+    CloseHandle(hProcess);
+    return TRUE;
+}
+```
+
+The function essentially wraps a lot of other essential features which we use to read the `EtwpRegistrationTable` structure and dump the values of user registration entries. On 
+
+
 
 ## References
 1 - [Taking a Snapshot and Viewing Processes](https://learn.microsoft.com/en-us/windows/win32/toolhelp/taking-a-snapshot-and-viewing-processes)
