@@ -396,12 +396,63 @@ VOID DumpNodeInfo(HANDLE hProcess, PRTL_BALANCED_NODE node, PETW_USER_REG_ENTRY 
 
 It's a very simple function that prints the entries of the `ETW_USER_REG_ENTRY` structure. For the most part, it is very self-explanatory with it printing the respective struct fields while updating the global `PROVIDER_COUNT` variable which essentially keeps track of how many providers the process is subscribed to. 
 
-However, I would like to draw attention to the part where we print the provider GUID:
+However, I would like to draw attention to two parts of the function, the first being where we print the provider GUID:
+
 ```c
 StringFromGUID2(&uRegEntry->ProviderId, guid, sizeof(guid));
 wprintf(L"[%03d] Provider GUID:\t\t%s (%s)\n", PROVIDER_COUNT, guid, Guid2Name(guid));
 ```
 
+We use the `StringFromGUID2()` function to convert the `ProviderId` field of the user entry, which essentially represents the Provider GUID. We also try to convert the GUID to the Provider Name with the `Guid2Name()` function, which is essentially a wrapper around the [ITraceDataProvider](https://learn.microsoft.com/en-us/windows/win32/api/pla/nn-pla-itracedataprovider) (more on that later).
+
+The second code segment from the function I wanted to discuss is:
+```c
+if (GetMappedFileNameA(hProcess, (LPVOID)uRegEntry->Callback, cbFile, MAX_PATH) != 0) {
+    (void)PathStripPathA(cbFile);
+    printf("[%03d] Callback Function:\t0x%p :: %s", PROVIDER_COUNT, uRegEntry->Callback, cbFile);
+    pSymbol->SizeOfStruct = sizeof(SYMBOL_INFO);
+    pSymbol->MaxNameLen = MAX_SYM_NAME;
+    if(SymFromAddr(hProcess, (ULONG_PTR)uRegEntry->Callback, NULL, pSymbol)) {
+        printf("!%hs", pSymbol->Name);
+    }
+    printf("\n");
+}
+```
+
+Here, we check if we can resolve the name for the memory-mapped file, and if we can, we strip the filename and then use `SymFromAddr()` to retrieve symbol information for the specified address.
+
+Coming back to `Guid2Name()`:
+```c
+// Defined in lister.h
+// Get ProviderName from GUID
+BSTR Guid2Name(OLECHAR* id) {
+    ITraceDataProvider* iTDataProv = NULL;
+    BSTR name = NULL;
+    
+    // Create an instance of a COM class 
+    HRESULT hr = CoCreateInstance(              
+                    &CLSID_TraceDataProvider,               // CLSID (Class Identifier) of the TraceDataProvider Class
+                    0,                                      // Indicates that the object is not being created as part of an aggregate
+                    CLSCTX_INPROC_SERVER,                   // Indicates that the object should be created within the same process as the calling code.
+                    &IID_ITraceDataProvider,                // Interface identifier for the ITraceDataProvider interface.
+                    (LPVOID*)&iTDataProv);                  // Receive the interface pointer of the created object
+
+
+    // query details for the provider GUID
+    hr = iTDataProv->lpVtbl->Query(iTDataProv, id, NULL);
+
+    if (hr != S_OK) {
+        iTDataProv->lpVtbl->Release(iTDataProv);
+        return L"Unknown";
+        
+    }
+    hr = iTDataProv->lpVtbl->get_DisplayName(iTDataProv, &name);
+    iTDataProv->lpVtbl->Release(iTDataProv);
+    return hr == S_OK ? name : L"Unknown";
+}
+
+```
+The function uses the `CoCreateInstance()` function to create an instance of the TraceDataProvider COM object( identified by the Class Identifier `CLSID_TraceDataProvider`). This COM object is created within the same process as the calling code(as indicated by passing `CLSCTX_INPROC_SERVER` to the function), and the code specifies that it wants to obtain the ITraceDataProvider interface from the newly created object(by setting the Interface identifier to `IID_ITraceDataProvider`). The resulting interface pointer is stored in the variable `iTDataProv`. This allows the program to interact with and use the functionality provided by the `ITraceDataProvider` COM object, which we use to call the `Query()` and `get_DisplayName()` functions to retrieve the name of the Provider. If the functions succeeds, we return the Provider name, else return the string: `"Unknown"`.
 
 ## References
 1 - [Taking a Snapshot and Viewing Processes](https://learn.microsoft.com/en-us/windows/win32/toolhelp/taking-a-snapshot-and-viewing-processes)

@@ -117,10 +117,10 @@ BSTR Guid2Name(OLECHAR* id) {
     // Create an instance of a COM class 
     HRESULT hr = CoCreateInstance(              
                     &CLSID_TraceDataProvider,               // CLSID (Class Identifier) of the TraceDataProvider Class
-                    0,                                      // Indicates that the object is not being created as part of an aggregat
+                    0,                                      // Indicates that the object is not being created as part of an aggregate
                     CLSCTX_INPROC_SERVER,                   // Indicates that the object should be created within the same process as the calling code.
                     &IID_ITraceDataProvider,                // Interface identifier for the ITraceDataProvider interface.
-                    (LPVOID*)&iTDataProv);                        // Receive the interface pointer of the created object
+                    (LPVOID*)&iTDataProv);                  // Receive the interface pointer of the created object
 
 
     // query details for the provider GUID
